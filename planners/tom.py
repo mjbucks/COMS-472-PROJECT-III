@@ -37,31 +37,44 @@ def dfs(grid, start, end):
     return None
 
 class PlannerAgent:
-	
-	def __init__(self):
-		pass
-	
-	def plan_action(self, world: np.ndarray, current: np.ndarray, pursued: np.ndarray, pursuer: np.ndarray) -> Optional[np.ndarray]:
-		"""
-		Computes a action to take from the current position caputure the pursued while evading from the pursuer
+    
+    def __init__(self):
+        pass
+    
+    def plan_action(self, world: np.ndarray, current: np.ndarray, pursued: np.ndarray, pursuer: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Computes a action to take from the current position caputure the pursued while evading from the pursuer
 
-		Parameters:
-		- world (np.ndarray): A 2D numpy array representing the grid environment.
-		- 0 represents a walkable cell.
-		- 1 represents an obstacle.
-		- current (np.ndarray): The (row, column) coordinates of the current position.
+        Parameters:
+        - world (np.ndarray): A 2D numpy array representing the grid environment.
+        - 0 represents a walkable cell.
+        - 1 represents an obstacle.
+        - current (np.ndarray): The (row, column) coordinates of the current position.
         - pursued (np.ndarray): The (row, column) coordinates of the agent to be pursued.
-		- pursuer (np.ndarray): The (row, column) coordinates of the agent to evade from.
+        - pursuer (np.ndarray): The (row, column) coordinates of the agent to evade from.
 
-		Returns:
-		- np.ndarray: one of the 9 actions from 
-          					[0,0], [-1, 0], [1, 0], [0, -1], [0, 1],
-                  	  		[-1, -1], [-1, 1], [1, -1], [1, 1]
-		"""
-		
-		directions = np.array([[0,0], [-1, 0], [1, 0], [0, -1], [0, 1],
-                  	  		   [-1, -1], [-1, 1], [1, -1], [1, 1]]) 
+        Returns:
+        - np.ndarray: one of the 9 actions from 
+                              [0,0], [-1, 0], [1, 0], [0, -1], [0, 1],
+                                [-1, -1], [-1, 1], [1, -1], [1, 1]
+        """
+        
+        directions = np.array([[0,0], [-1, 0], [1, 0], [0, -1], [0, 1],
+                                   [-1, -1], [-1, 1], [1, -1], [1, 1]]) 
+          
+        # Ensure start and end positions are tuples of integers
+        start = (int(current[0]), int(current[1]))
+        end = (int(pursued[0]), int(pursued[1]))
 
-		return directions[np.random.choice(9)]
+        # Convert the numpy array to a list of lists for compatibility with the example DFS function
+        world_list: List[List[int]] = world.tolist()
+
+        # Perform DFS pathfinding and return the result as a numpy array
+        path = dfs(world_list, start, end)
+
+        try:
+            return np.array(path)[1]-current
+        except:
+            return directions[np.random.choice(9)]
 
 
