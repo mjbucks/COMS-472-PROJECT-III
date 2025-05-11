@@ -1,0 +1,240 @@
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}
+\usepackage{url}
+\usepackage{amsmath}
+
+\IEEEoverridecommandlockouts
+\overrideIEEEmargins
+
+\title{\LARGE \bf
+Reinforcement Learning for Pursuit-Evasion Problems
+}
+
+\author{Maxwell Rohrer$^{1}$ and Eli Newlin$^{2}$%
+\thanks{$^{1}$Maxwell Rohrer is with the Department of Computer Science, Iowa State University, Ames, Iowa
+        {\tt\small mrohrer@iastate.edu}}%
+\thanks{$^{2}$Eli Newlin is with the Department of Computer Science, Iowa State University, Ames, Iowa
+        {\tt\small newlin18@iastate.edu}}%
+}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+\begin{abstract}
+This report offers a reinforcement learning technique to solve an adversarial search game in any dynamic environment. The agent that we produced uses methods of Q-learning and experience replay to make decisions in a setting where both pursuit of the target and evasion of the pursuer is key. The algorithm we made aims to find a balance between pursuit and safety measures while adapting to environmental uncertainty. Key features of the algorithm we developed include reward shaping, state discretization, and response mechanisms while in challenging situations.
+\end{abstract}
+
+\section{INTRODUCTION}
+Our agent deals with the challenges faced during adversarial search problems where an agent must reach a target while avoiding capture by a pursuer. Contrary to traditional path planning algorithms that focus solely on finding an optimal path, our approach uses reinforcement learning to develop a policy that balances many objectives in environments with inherent uncertainty. This makes it well-suited for scenarios where the outcomes of actions may or will not be deterministic.
+
+\section{ALGORITHM DESCRIPTION}
+Our solution employs Q-learning, a model-free reinforcement learning algorithm that learns an optimal action-selection policy through experience. The core of our approach is the Q-table update rule:
+
+\[
+Q(s,a) \leftarrow Q(s,a) + \alpha [r + \gamma \max_{a'} Q(s',a') - Q(s,a)]
+\]
+
+where:
+\begin{itemize}
+    \item $Q(s,a)$ is the Q-value for state $s$ and action $a$
+    \item $\alpha = 0.15$ is the learning rate
+    \item $r$ is the reward received
+    \item $\gamma = 0.95$ is the discount factor
+    \item $s'$ is the next state
+    \item $\max_{a'} Q(s',a')$ is the maximum Q-value for the next state
+\end{itemize}
+
+Key enhancements to basic Q-learning include:
+\begin{itemize}
+    \item Optimistic initialization of Q-values to encourage exploration
+    \item Epsilon-greedy action selection with decay ($\varepsilon = 0.2$ initially)
+    \item Experience replay to improve sample efficiency and learning stability
+    \item Discretized state representation for better generalization
+    \item Dynamic reward function balancing pursuit and safety
+\end{itemize}
+
+\section{STATE REPRESENTATION AND ACTION SPACE}
+\subsection{State Representation}
+The state is represented as a tuple containing:
+\begin{itemize}
+    \item Discretized relative positions of pursued target and pursuer (3x3 grid)
+    \item Discretized distances to pursued target and pursuer (4 bins based on Manhattan distance)
+    \item Uncertainty level in the environment (0-2 bins)
+\end{itemize}
+
+This representation captures the essential information while maintaining a manageable state space through discretization:
+
+\[
+\text{state} = \left(
+\begin{array}{l}
+\text{pursued\_rel}, \\
+\text{pursuer\_rel}, \\
+\text{dist\_pursued\_bin}, \\
+\text{dist\_pursuer\_bin}, \\
+\text{uncertainty\_bin}
+\end{array}
+\right)
+\]
+
+where:
+\begin{itemize}
+    \item pursued\_rel and pursuer\_rel are discretized using a 3x3 grid relative to current position
+    \item dist\_pursued\_bin and dist\_pursuer\_bin are calculated as:
+    \[
+    \text{bin} = \min\left(\left\lfloor\frac{\text{Manhattan distance}}{5}\right\rfloor, 3\right)
+    \]
+    This creates 4 distinct distance ranges:
+    \begin{itemize}
+        \item Bin 0: Very close (0-4 units away)
+        \item Bin 1: Close (5-9 units away)
+        \item Bin 2: Medium (10-14 units away)
+        \item Bin 3: Far (15+ units away)
+    \end{itemize}
+    \item uncertainty\_bin is calculated from the entropy of observed probability distribution
+\end{itemize}
+
+For example, if the Manhattan distance to the pursued target is 7 units:
+\[
+\text{dist\_pursued\_bin} = \min\left(\left\lfloor\frac{7}{5}\right\rfloor, 3\right) = \min(1, 3) = 1
+\]
+This means the target is in the "Close" range (bin 1).
+
+\subsection{Action Space}
+The action space consists of nine possible movement directions:
+\begin{itemize}
+    \item Stay in place [0,0]
+    \item Cardinal directions: up [-1,0], down [1,0], left [0,-1], right [0,1]
+    \item Diagonal directions: up-left [-1,-1], up-right [-1,1], down-left [1,-1], down-right [1,1]
+\end{itemize}
+
+The agent considers only legal actions (those that don't move into obstacles or outside the grid).
+
+\section{REWARD FUNCTION}
+The reward function balances target pursuit with safety considerations:
+
+\begin{itemize}
+    \item Immediate win (capturing target): +200
+    \item Immediate loss (getting captured): -200
+    \item Pursuit reward: $2.0 \cdot e^{-d_t/5}$ where $d_t$ is distance to target
+    \item Safety reward:
+    \begin{itemize}
+        \item -3.0 when pursuer distance $\leq$ 1
+        \item -1.0 when pursuer distance $\leq$ 3
+        \item +0.5 when pursuer distance $\leq$ 5
+        \item 0.0 otherwise
+    \end{itemize}
+    \item Small penalty (-0.2) for staying in place
+\end{itemize}
+
+The agent dynamically adjusts weights between pursuit and safety based on the relative distances:
+\begin{itemize}
+    \item When pursuer is closer than target: 30\% pursuit, 70\% safety
+    \item Otherwise: 70\% pursuit, 30\% safety
+\end{itemize}
+
+\section{HANDLING UNCERTAINTY}
+The agent tracks uncertainty in the environment and adapts its behavior through several mechanisms:
+\begin{itemize}
+    \item Maintains a history of last 15 action outcomes in a circular buffer
+    \item Tracks probability distribution of [left, straight, right] rotations
+    \item Updates probability estimates based on observed outcomes
+    \item Calculates uncertainty using normalized entropy of the distribution
+    \item Increases exploration rate proportionally to uncertainty level
+    \item Reduces reward expectations in uncertain situations
+\end{itemize}
+
+The probability distribution is updated after each action by comparing expected and actual outcomes:
+\begin{itemize}
+    \item For each action, three possible outcomes are considered:
+    \begin{itemize}
+        \item Left rotation: $[-y, x]$ relative to expected direction
+        \item Straight: Expected direction
+        \item Right rotation: $[y, -x]$ relative to expected direction
+    \end{itemize}
+    \item The actual outcome is matched to one of these possibilities
+    \item Counts for each outcome type are maintained in a probability distribution
+\end{itemize}
+
+Uncertainty is calculated based on the entropy of the observed probability distribution:
+\[
+uncertainty = 1.0 - \frac{entropy}{log_2(3)}
+\]
+where entropy is calculated as:
+\[
+entropy = -\sum_{i=1}^{3} p_i \log_2(p_i)
+\]
+and $p_i$ represents the probability of each outcome (left, straight, right).
+
+The agent's exploration rate is dynamically adjusted based on uncertainty:
+\[
+\epsilon_{effective} = \epsilon_{base} \cdot (1.0 + uncertainty)
+\]
+
+This uncertainty-aware approach affects multiple aspects of decision-making:
+\begin{itemize}
+    \item Higher uncertainty leads to more exploration
+    \item Rewards are scaled down by $(1.0 - uncertainty \cdot 0.5)$
+    \item The state representation includes an uncertainty bin
+    \item The agent maintains a minimum level of exploration ($\epsilon_{min} = 0.05$)
+\end{itemize}
+
+\section{EXPERIENCE REPLAY}
+To improve learning efficiency and stability, the agent implements experience replay:
+\begin{itemize}
+    \item Stores experiences as $(s, a, r, s', a')$ tuples in a replay buffer of size 1000
+    \item Randomly samples batches of 32 experiences for Q-value updates
+    \item Starts using replay after collecting at least 100 experiences
+    \item Uses optimistic initialization of Q-values (1.0) to encourage exploration
+    \item Implements epsilon-greedy action selection with decay
+\end{itemize}
+
+The Q-values are initialized optimistically to encourage exploration:
+\[
+Q(s,a) = 1.0 \quad \forall s,a
+\]
+
+This initialization helps the agent explore the state space more thoroughly in the early stages of learning.
+
+\section{CRITICAL SITUATION HANDLING}
+The agent employs special handling for critical situations:
+\begin{itemize}
+    \item Immediate capture opportunity: Takes action to capture target
+    \item Imminent danger (pursuer too close): Prioritizes maximum distance from pursuer
+    \item Invalid action handling: Ensures robustness with fallback mechanisms
+\end{itemize}
+
+\section{RESULTS}
+Our Q-learning approach demonstrates effective performance in pursuit-evasion scenarios:
+\begin{itemize}
+    \item Successfully balances aggressive pursuit with defensive safety
+    \item Adapts to uncertainty in the environment
+    \item Improves performance over time through learning
+    \item Handles critical situations effectively
+    \item Maintains stable behavior through experience replay
+\end{itemize}
+
+The algorithm shows particular strength in:
+\begin{itemize}
+    \item Dynamic environments where fixed strategies would fail
+    \item Balancing multiple competing objectives
+    \item Adapting to probabilistic action outcomes
+    \item Avoiding capture while pursuing targets
+\end{itemize}
+
+\section{CONCLUSION}
+Our reinforcement learning approach to pursuit-evasion problems offers several advantages over traditional path planning. By using Q-learning with experience replay, our agent learns an effective policy for navigating complex scenarios involving both pursuit and evasion. The dynamic balancing of aggressive and defensive behaviors, combined with mechanisms for handling uncertainty, results in robust performance across various scenarios.
+
+\section{REFERENCES}
+\begin{thebibliography}{1}
+
+\bibitem{sutton2018reinforcement}
+R.S. Sutton and A.G. Barto, Reinforcement Learning: An Introduction, 2nd ed. Cambridge, MA, USA: MIT Press, 2018.
+
+\bibitem{mnih2015human}
+V. Mnih et al., "Human-level control through deep reinforcement learning," Nature, vol. 518, no. 7540, pp. 529-533, 2015.
+
+\end{thebibliography}
+
+\end{document}
