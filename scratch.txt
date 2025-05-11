@@ -1,0 +1,282 @@
+import numpy as np
+import math
+import random
+from typing import List, Tuple, Optional, Dict
+from collections import deque
+
+class MCTSNode:
+    __slots__ = ['state', 'parent', 'action', 'children', 'visits', 'value', 'untried_actions']
+    
+    def __init__(self, state, parent=None, action=None):
+        # State contains (jerry_pos, pursued_pos, pursuer_pos)
+        self.state = state
+        self.parent = parent
+        self.action = action  # Index of action that led to this state
+        self.children = []    # List of child nodes
+        self.visits = 0      # Number of times this node was visited
+        self.value = 0       # Accumulated reward value
+        self.untried_actions = None  # Actions not yet explored from this node
+    
+    def best_child(self):
+        # Returns child with highest average value
+        if not self.children: return None
+        if len(self.children) == 1: return self.children[0]
+        return self.children[np.argmax([c.value/c.visits if c.visits > 0 else 0 for c in self.children])]
+
+class PlannerAgent:
+    def __init__(self):
+        # Movement directions: [stay, up, down, left, right, up-left, up-right, down-left, down-right]
+        self.directions = np.array([[0,0], [-1,0], [1,0], [0,-1], [0,1], [-1,-1], [-1,1], [1,-1], [1,1]])
+        
+        # Maps each action to its possible rotations
+        self.actions_map = {0:[0,0,0], 1:[3,1,4], 2:[4,2,3], 3:[2,3,1], 4:[1,4,2], 5:[7,5,6], 6:[5,6,8], 7:[2,7,5], 8:[6,8,2]}
+        
+        # Track recent actions and probability distribution
+        self.action_history = deque(maxlen=15)
+        self.prob_dist = np.array([1/3, 1/3, 1/3])  # Initial uniform distribution
+        self.prior_counts = np.array([1, 1, 1])
+        self.uncertainty = 1.0  # Track uncertainty in probability estimation
+        
+        # State tracking
+        self.last_pos = None
+        self.last_action = None
+        self.step_count = 0
+        
+        # Pre-computed lookups for faster access
+        self.direction_indices = np.arange(len(self.directions))
+        self.rotation_lookup = {action: {r: i for i, r in enumerate(rotations)} 
+                              for action, rotations in self.actions_map.items()}
+    
+    def update_state(self, current, pursued, pursuer):
+        # Update probability distribution based on observed movement
+        if self.last_pos is not None and self.last_action is not None:
+            expected = self.last_pos + self.last_action
+            outcomes = np.array([
+                self.last_pos + np.array([-self.last_action[1], self.last_action[0]]),  # Left rotation
+                expected,                                                                 # Expected
+                self.last_pos + np.array([self.last_action[1], -self.last_action[0]])   # Right rotation
+            ])
+            
+            # Find which outcome matches current position
+            diff = np.abs(outcomes - current)
+            matches = np.sum(diff, axis=1) == 0
+            if np.any(matches):
+                result = np.where(matches)[0][0]
+                self.action_history.append(result)
+                self.prior_counts[result] += 1
+                
+                # Update uncertainty based on history length and consistency
+                if len(self.action_history) >= 5:
+                    # Calculate entropy of the distribution
+                    total = np.sum(self.prior_counts)
+                    if total > 0:
+                        probs = self.prior_counts / total
+                        entropy = -np.sum(probs * np.log2(probs + 1e-10))
+                        self.uncertainty = 1.0 - (entropy / np.log2(3))  # Normalize by max entropy
+                        
+                        # Update probability distribution with uncertainty
+                        self.prob_dist = probs * (1 - self.uncertainty) + np.array([1/3, 1/3, 1/3]) * self.uncertainty
+                        self.prob_dist = self.prob_dist / np.sum(self.prob_dist)  # Normalize
+        
+        self.last_pos = np.array(current)
+    
+    def get_legal_actions(self, world, pos):
+        # Returns indices of valid moves (within bounds and not blocked)
+        new_positions = pos + self.directions
+        valid_mask = (
+            (new_positions[:, 0] >= 0) & 
+            (new_positions[:, 0] < world.shape[0]) & 
+            (new_positions[:, 1] >= 0) & 
+            (new_positions[:, 1] < world.shape[1]) & 
+            (world[new_positions[:, 0], new_positions[:, 1]] == 0)
+        )
+        return self.direction_indices[valid_mask]
+    
+    def modified_action(self, action_idx):
+        # Apply probability-based rotation with uncertainty consideration
+        if self.uncertainty > 0.8:  # High uncertainty
+            # More likely to choose expected action when uncertain
+            if np.random.random() < 0.7:
+                return action_idx
+            choice = np.random.choice(3)
+        else:
+            choice = np.random.choice(3, p=self.prob_dist)
+        
+        if choice == 1: return action_idx  # No rotation
+        return self.rotation_lookup[action_idx][choice]
+    
+    def calculate_reward(self, state):
+        # Calculate reward based on distances to pursued and pursuer
+        jerry_pos, pursued_pos, pursuer_pos = state
+        dist_to_pursued = abs(jerry_pos[0] - pursued_pos[0]) + abs(jerry_pos[1] - pursued_pos[1])
+        dist_to_pursuer = abs(jerry_pos[0] - pursuer_pos[0]) + abs(jerry_pos[1] - pursuer_pos[1])
+        return 0.9 / (1 + dist_to_pursued) if dist_to_pursuer > 3 else 0.3 / (1 + dist_to_pursued)
+    
+    def mcts_search(self, world, current, pursued, pursuer, critical=False):
+        # Initialize MCTS search
+        initial_state = (tuple(current), tuple(pursued), tuple(pursuer))
+        root = MCTSNode(initial_state)
+        legal_actions = self.get_legal_actions(world, current)
+        if not legal_actions: return self.directions[0]
+        
+        # Check for immediate win
+        for action in legal_actions:
+            new_pos = current + self.directions[action]
+            if np.array_equal(new_pos, pursued):
+                return self.directions[action]
+        
+        # Handle critical situations (pursuer too close)
+        dist_to_pursuer = abs(current[0] - pursuer[0]) + abs(current[1] - pursuer[1])
+        if dist_to_pursuer <= 1:
+            new_positions = current + self.directions[legal_actions]
+            dists_to_pursuer = np.sum(np.abs(new_positions - pursuer), axis=1)
+            return self.directions[legal_actions[np.argmax(dists_to_pursuer)]]
+        
+        # Enhanced MCTS with dynamic simulation count
+        root.untried_actions = legal_actions.copy()
+        random.shuffle(root.untried_actions)
+        
+        # Adjust simulations based on situation and uncertainty
+        dist_to_pursued = abs(current[0] - pursued[0]) + abs(current[1] - pursued[1])
+        base_simulations = 10
+        if dist_to_pursuer <= 2:  # Very dangerous
+            base_simulations = 20
+        elif dist_to_pursued <= 3:  # Close to target
+            base_simulations = 15
+        elif dist_to_pursuer <= 4:  # Moderately dangerous
+            base_simulations = 12
+        
+        # Increase simulations when uncertainty is high
+        num_simulations = int(base_simulations * (1 + self.uncertainty))
+        
+        # Track best action found
+        best_action_value = float('-inf')
+        best_action = None
+        
+        # Main MCTS loop
+        for _ in range(num_simulations):
+            node = root
+            path = [node]
+            
+            # Selection: Look ahead 2 steps
+            while len(path) <= 2:
+                if not node.untried_actions:
+                    node = node.best_child()
+                    if not node: break
+                    path.append(node)
+                else:
+                    action = node.untried_actions.pop()
+                    jerry_pos, pursued_pos, pursuer_pos = node.state
+                    new_pos = np.array(jerry_pos) + self.directions[action]
+                    child = MCTSNode((tuple(new_pos), pursued_pos, pursuer_pos), node, action)
+                    node.children.append(child)
+                    path.append(child)
+                    break
+            
+            if len(path) > 1:
+                # Rollout: Simulate 3 steps ahead
+                jerry_pos = np.array(path[-1].state[0])
+                pursued_pos = np.array(path[-1].state[1])
+                pursuer_pos = np.array(path[-1].state[2])
+                
+                total_reward = 0
+                rollout_steps = 3
+                
+                for step in range(rollout_steps):
+                    legal = self.get_legal_actions(world, jerry_pos)
+                    if not legal: break
+                    
+                    # Calculate scores for current and future positions
+                    new_positions = jerry_pos + self.directions[legal]
+                    dists_to_pursued = np.sum(np.abs(new_positions - pursued_pos), axis=1)
+                    dists_to_pursuer = np.sum(np.abs(new_positions - pursuer_pos), axis=1)
+                    
+                    # Adjust scoring based on uncertainty
+                    uncertainty_factor = 1.0 - self.uncertainty
+                    immediate_scores = -dists_to_pursued + (0.3 * uncertainty_factor) * dists_to_pursuer
+                    future_scores = np.zeros_like(immediate_scores)
+                    
+                    # Look ahead one more step
+                    for i, new_pos in enumerate(new_positions):
+                        future_legal = self.get_legal_actions(world, new_pos)
+                        if future_legal:
+                            future_positions = new_pos + self.directions[future_legal]
+                            future_dists_to_pursued = np.sum(np.abs(future_positions - pursued_pos), axis=1)
+                            future_dists_to_pursuer = np.sum(np.abs(future_positions - pursuer_pos), axis=1)
+                            future_scores[i] = np.mean(-future_dists_to_pursued + (0.3 * uncertainty_factor) * future_dists_to_pursuer)
+                    
+                    # Combine immediate and future scores
+                    scores = 0.7 * immediate_scores + 0.3 * future_scores
+                    action_idx = legal[np.argmax(scores)]
+                    modified_idx = self.modified_action(action_idx)
+                    action = self.directions[modified_idx]
+                    jerry_pos = jerry_pos + action
+                    
+                    # Update total reward with discount
+                    rollout_state = (tuple(jerry_pos), tuple(pursued_pos), tuple(pursuer_pos))
+                    step_reward = self.calculate_reward(rollout_state)
+                    total_reward += step_reward * (0.9 ** step)
+                
+                # Backpropagation with discounted rewards
+                for node in reversed(path):
+                    node.visits += 1
+                    node.value += total_reward
+                    
+                    # Update best action if at root
+                    if node.parent is None and node.visits > 0:
+                        action_value = node.value / node.visits
+                        if action_value > best_action_value:
+                            best_action_value = action_value
+                            best_action = node.action
+        
+        # Return best action or fallback to greedy
+        if best_action is not None:
+            return self.directions[best_action]
+        
+        # Greedy fallback with uncertainty consideration
+        new_positions = current + self.directions[legal_actions]
+        dists_to_pursued = np.sum(np.abs(new_positions - pursued), axis=1)
+        dists_to_pursuer = np.sum(np.abs(new_positions - pursuer), axis=1)
+        uncertainty_factor = 1.0 - self.uncertainty
+        scores = -dists_to_pursued + (0.3 * uncertainty_factor) * dists_to_pursuer
+        return self.directions[legal_actions[np.argmax(scores)]]
+    
+    def plan_action(self, world: np.ndarray, current: Tuple[int, int], pursued: Tuple[int, int], pursuer: Tuple[int, int]) -> Optional[np.ndarray]:
+        try:
+            self.step_count += 1
+            
+            # Convert positions to numpy arrays
+            current = np.array(current)
+            pursued = np.array(pursued)
+            pursuer = np.array(pursuer)
+            
+            # Update state and probability distribution
+            self.update_state(current, pursued, pursuer)
+            
+            # Check for immediate win
+            for action in self.directions[1:]:
+                new_pos = current + action
+                if np.array_equal(new_pos, pursued) and self.is_valid_action(world, current, action):
+                    self.last_action = action
+                    return action
+            
+            # Determine if situation is critical
+            dist_to_pursuer = abs(current[0] - pursuer[0]) + abs(current[1] - pursuer[1])
+            dist_to_pursued = abs(current[0] - pursued[0]) + abs(current[1] - pursued[1])
+            critical = dist_to_pursuer <= 1 or dist_to_pursued <= 2 or self.step_count % 15 == 0
+            
+            # Get action from MCTS
+            chosen_action = self.mcts_search(world, current, pursued, pursuer, critical)
+            self.last_action = chosen_action
+            return chosen_action
+            
+        except Exception as e:
+            return self.directions[0]
+    
+    def is_valid_action(self, world, pos, action):
+        # Check if action is valid (within bounds and not blocked)
+        new_pos = pos + action
+        return (0 <= new_pos[0] < world.shape[0] and 0 <= new_pos[1] < world.shape[1] and 
+                world[new_pos[0], new_pos[1]] == 0)
+
+

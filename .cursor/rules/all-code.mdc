@@ -1,0 +1,6 @@
+---
+description: 
+globs: *
+alwaysApply: false
+---
+all code in the codebase
